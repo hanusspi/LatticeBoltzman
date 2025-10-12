@@ -1,0 +1,269 @@
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
+
+#include "lbm_kernel.cuh"
+
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cmath>
+
+// Simulation parameters
+const int GRID_WIDTH = 256;
+const int GRID_HEIGHT = 256;
+const int WINDOW_WIDTH = 800;
+const int WINDOW_HEIGHT = 800;
+
+// OpenGL objects
+GLuint shaderProgram;
+GLuint VAO, VBO, EBO;
+GLuint gridTexture;
+cudaGraphicsResource* cudaResource = nullptr;
+
+// Function prototypes
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+void processInput(GLFWwindow* window);
+GLuint compileShader(const char* source, GLenum shaderType);
+GLuint createShaderProgram(const char* vertexPath, const char* fragmentPath);
+void setupQuad();
+void setupTexture();
+std::string readFile(const char* filepath);
+
+// Shader loader
+std::string readFile(const char* filepath)
+{
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file: " << filepath << std::endl;
+        return "";
+    }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+GLuint compileShader(const char* source, GLenum shaderType)
+{
+    GLuint shader = glCreateShader(shaderType);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    // Check for compilation errors
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
+        std::cerr << "Shader compilation failed:\n" << infoLog << std::endl;
+    }
+
+    return shader;
+}
+
+GLuint createShaderProgram(const char* vertexPath, const char* fragmentPath)
+{
+    std::string vertexCode = readFile(vertexPath);
+    std::string fragmentCode = readFile(fragmentPath);
+
+    if (vertexCode.empty() || fragmentCode.empty()) {
+        std::cerr << "Failed to load shaders!" << std::endl;
+        return 0;
+    }
+
+    GLuint vertexShader = compileShader(vertexCode.c_str(), GL_VERTEX_SHADER);
+    GLuint fragmentShader = compileShader(fragmentCode.c_str(), GL_FRAGMENT_SHADER);
+
+    // Link shaders
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+
+    // Check for linking errors
+    GLint success;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(program, 512, nullptr, infoLog);
+        std::cerr << "Shader linking failed:\n" << infoLog << std::endl;
+    }
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    return program;
+}
+
+void setupQuad()
+{
+    // Fullscreen quad vertices (position + texcoord)
+    float vertices[] = {
+        // positions   // texCoords
+        -1.0f,  1.0f,  0.0f, 1.0f,  // top-left
+        -1.0f, -1.0f,  0.0f, 0.0f,  // bottom-left
+         1.0f, -1.0f,  1.0f, 0.0f,  // bottom-right
+         1.0f,  1.0f,  1.0f, 1.0f   // top-right
+    };
+
+    unsigned int indices[] = {
+        0, 1, 2,
+        2, 3, 0
+    };
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
+
+    glBindVertexArray(VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    // Position attribute
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    // Texture coord attribute
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+}
+
+void setupTexture()
+{
+    glGenTextures(1, &gridTexture);
+    glBindTexture(GL_TEXTURE_2D, gridTexture);
+
+    // Set texture parameters
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Allocate texture memory
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, GRID_WIDTH, GRID_HEIGHT, 0, GL_RGBA, GL_FLOAT, nullptr);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Initialize CUDA-OpenGL interop
+    initCudaTexture(&cudaResource, gridTexture);
+}
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+{
+    glViewport(0, 0, width, height);
+}
+
+void processInput(GLFWwindow* window)
+{
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+}
+
+int main()
+{
+    // Initialize GLFW
+    if (!glfwInit()) {
+        std::cerr << "Failed to initialize GLFW" << std::endl;
+        return -1;
+    }
+
+    // Configure GLFW
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    // Create window
+    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "LBM Integration Test", nullptr, nullptr);
+    if (!window) {
+        std::cerr << "Failed to create GLFW window" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+
+    glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+
+    // Disable vsync for maximum performance
+    glfwSwapInterval(0);
+
+    // Initialize GLAD
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD" << std::endl;
+        return -1;
+    }
+
+    // Initialize CUDA
+    cudaSetDevice(0);
+    cudaGLSetGLDevice(0);
+
+    std::cout << "Grid size: " << GRID_WIDTH << "x" << GRID_HEIGHT << std::endl;
+    std::cout << "Window size: " << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << std::endl;
+
+    // Setup OpenGL objects
+    shaderProgram = createShaderProgram("shaders/shader.vert", "shaders/shader.frag");
+    if (shaderProgram == 0) {
+        std::cerr << "Failed to create shader program" << std::endl;
+        return -1;
+    }
+
+    setupQuad();
+    setupTexture();
+
+	LBM_State* lbmState = new LBM_State();
+	initializeLBM(lbmState, GRID_WIDTH, GRID_HEIGHT, 0.6f, 400.0f);
+
+    // Main render loop
+    float startTime = glfwGetTime();
+    while (!glfwWindowShouldClose(window)) {
+        // Input
+        processInput(window);
+
+        // Calculate elapsed time
+        float currentTime = glfwGetTime();
+        float elapsedTime = currentTime - startTime;
+
+        // Run CUDA kernel to fill grid with colors
+        //fillGridWithColors(cudaResource, GRID_WIDTH, GRID_HEIGHT, elapsedTime);
+		stepLBM(cudaResource, lbmState);
+
+        // Render
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glUseProgram(shaderProgram);
+
+        // Bind texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gridTexture);
+        glUniform1i(glGetUniformLocation(shaderProgram, "gridTexture"), 0);
+
+        // Draw quad
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        // Swap buffers and poll events
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    // Cleanup
+    //cleanupCudaResources(cudaResource);
+	lbm_destroy(lbmState);
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &EBO);
+    glDeleteTextures(1, &gridTexture);
+    glDeleteProgram(shaderProgram);
+
+    glfwTerminate();
+    return 0;
+}
