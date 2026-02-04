@@ -71,7 +71,8 @@ const int GRID_HEIGHT = 256;
 const float TAU = 0.6f;
 const float REYNOLDS = 400.0f;
 ```
-
+As first test, the popular lid driven cavity test indicates the desired functionality of the solver
+![Lid driven cavity](KarmanVerti.mp4)
 **Flow Obstacle** (`main_flow_obstacle.cpp`):
 ```cpp
 const int GRID_WIDTH = 1600;
@@ -80,6 +81,8 @@ const int OBSTACLE_RADIUS = 40;
 const float TAU = 1.1f;
 const float INLET_VELOCITY = 0.04f;
 ```
+The simulation shows the distinctive Kármán vortex street, indicating, that it works as desired
+![Kármán vortex street](KarmanVerti.mp4)
 
 ## Visualization
 
