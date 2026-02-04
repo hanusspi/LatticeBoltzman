@@ -11,11 +11,15 @@
 #include <string>
 #include <cmath>
 
-// Simulation parameters
+// Simulation parameters - Lid-Driven Cavity
 const int GRID_WIDTH = 256;
 const int GRID_HEIGHT = 256;
 const int WINDOW_WIDTH = 800;
 const int WINDOW_HEIGHT = 800;
+
+// Physics parameters
+const float TAU = 0.6f;
+const float REYNOLDS = 400.0f;
 
 // OpenGL objects
 GLuint shaderProgram;
@@ -32,7 +36,6 @@ void setupQuad();
 void setupTexture();
 std::string readFile(const char* filepath);
 
-// Shader loader
 std::string readFile(const char* filepath)
 {
     std::ifstream file(filepath);
@@ -99,9 +102,7 @@ GLuint createShaderProgram(const char* vertexPath, const char* fragmentPath)
 
 void setupQuad()
 {
-    // Fullscreen quad vertices (position + texcoord)
     float vertices[] = {
-        // positions   // texCoords
         -1.0f,  1.0f,  0.0f, 1.0f,  // top-left
         -1.0f, -1.0f,  0.0f, 0.0f,  // bottom-left
          1.0f, -1.0f,  1.0f, 0.0f,  // bottom-right
@@ -125,7 +126,6 @@ void setupQuad()
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    // Position attribute
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
@@ -141,18 +141,15 @@ void setupTexture()
     glGenTextures(1, &gridTexture);
     glBindTexture(GL_TEXTURE_2D, gridTexture);
 
-    // Set texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // Allocate texture memory
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, GRID_WIDTH, GRID_HEIGHT, 0, GL_RGBA, GL_FLOAT, nullptr);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Initialize CUDA-OpenGL interop
     initCudaTexture(&cudaResource, gridTexture);
 }
 
@@ -169,19 +166,16 @@ void processInput(GLFWwindow* window)
 
 int main()
 {
-    // Initialize GLFW
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
         return -1;
     }
 
-    // Configure GLFW
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    // Create window
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "LBM Integration Test", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "LBM Lid-Driven Cavity", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -191,23 +185,22 @@ int main()
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
-    // Disable vsync for maximum performance
     glfwSwapInterval(0);
 
-    // Initialize GLAD
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cerr << "Failed to initialize GLAD" << std::endl;
         return -1;
     }
 
-    // Initialize CUDA
     cudaSetDevice(0);
     cudaGLSetGLDevice(0);
 
+    std::cout << "=== Lid-Driven Cavity Simulation ===" << std::endl;
     std::cout << "Grid size: " << GRID_WIDTH << "x" << GRID_HEIGHT << std::endl;
     std::cout << "Window size: " << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << std::endl;
+    std::cout << "Reynolds number: " << REYNOLDS << std::endl;
+    std::cout << "Tau: " << TAU << std::endl;
 
-    // Setup OpenGL objects
     shaderProgram = createShaderProgram("shaders/shader.vert", "shaders/shader.frag");
     if (shaderProgram == 0) {
         std::cerr << "Failed to create shader program" << std::endl;
@@ -217,47 +210,41 @@ int main()
     setupQuad();
     setupTexture();
 
-	LBM_State* lbmState = new LBM_State();
-	initializeLBM(lbmState, GRID_WIDTH, GRID_HEIGHT, 0.6f, 400.0f);
+    LBM_State* lbmState = new LBM_State();
+    initializeLBM_LidCavity(lbmState, GRID_WIDTH, GRID_HEIGHT, TAU, REYNOLDS);
 
-    // Main render loop
-    float startTime = glfwGetTime();
+    int frameCount = 0;
+    float lastTime = glfwGetTime();
+
     while (!glfwWindowShouldClose(window)) {
-        // Input
         processInput(window);
+        stepLBM_LidCavity(cudaResource, lbmState);
 
-        // Calculate elapsed time
-        float currentTime = glfwGetTime();
-        float elapsedTime = currentTime - startTime;
-
-        // Run CUDA kernel to fill grid with colors
-        //fillGridWithColors(cudaResource, GRID_WIDTH, GRID_HEIGHT, elapsedTime);
-		stepLBM(cudaResource, lbmState);
-
-        // Render
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
 
-        // Bind texture
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gridTexture);
         glUniform1i(glGetUniformLocation(shaderProgram, "gridTexture"), 0);
 
-        // Draw quad
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
 
-        // Swap buffers and poll events
         glfwSwapBuffers(window);
         glfwPollEvents();
-    }
 
-    // Cleanup
-    //cleanupCudaResources(cudaResource);
-	lbm_destroy(lbmState);
+        frameCount++;
+        float currentTime = glfwGetTime();
+        if (currentTime - lastTime >= 1.0f) {
+            std::cout << "FPS: " << frameCount << " | Timestep: " << lbmState->timestep << std::endl;
+            frameCount = 0;
+            lastTime = currentTime;
+        }
+    }
+    lbm_destroy(lbmState);
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);
